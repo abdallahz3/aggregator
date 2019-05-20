@@ -42,7 +42,7 @@ defmodule KrakenClient do
     s =
       Enum.reduce(state.symbols_list, %{}, fn {a, _}, acc ->
         acc = put_in(acc, [a], %{})
-        acc = put_in(acc, [a, :orderbook], %{})
+        acc = put_in(acc, [a, :orderbook], %{ask: 0, bid: 0, ask_size: 0, bid_size: 0})
         acc
       end)
 
@@ -114,36 +114,7 @@ defmodule KrakenClient do
     pair_as_atom = state.channels_map[channel_id]
     state = update_ticker(state, pair_as_atom, tick)
 
-    # AggregatorActor.new_message(%{
-    #   ask: ask,
-    #   ask_size: ask_size,
-    #   bid: bid,
-    #   bid_size: bid_size,
-    #   exchange: "kraken",
-    #   high: hd(tick["h"]),
-    #   last_price: 0,
-    #   low: hd(tick["l"]),
-    #   symbol: state.channels_map[String.to_atom(channel_id)],
-    #   timestamp: 0,
-    #   volume: hd(tick["v"])
-    # }
-    # )
-
-    pair = state[pair_as_atom]
-
-    IO.inspect(%{
-      ask: pair.orderbook.ask,
-      ask_size: pair.orderbook.ask_size,
-      bid: pair.orderbook.bid,
-      bid_size: pair.orderbook.bid_size,
-      exchange: "kraken",
-      high: pair.h,
-      last_price: 0,
-      low: pair.l,
-      symbol: state.symbols_ids[pair_as_atom],
-      timestamp: 0,
-      volume: pair.v
-    })
+    AggregatorActor.new_message(state[pair_as_atom])
 
     state
   end

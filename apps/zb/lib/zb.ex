@@ -1,4 +1,4 @@
-defmodule HitBTCClient do
+defmodule ZbClient do
   use WebSockex
 
   # state looks like this
@@ -15,14 +15,13 @@ defmodule HitBTCClient do
   #    }
   # }
   #
-  # HitBTCClient.start_link [{:'ETHBTC', "eth_btc"}]
   #
-  # HitBTCClient.start_link [{:'ETHBTC', "eth_btc"}, {:'BTCUSD', "btc_usd"}]
+  # ZbClient.start_link [{:ltcbtc, "ltc_btc"}, {:btcusdt, "btc_usdt"}]
   #
   #
 
   def start_link(symbols) do
-    WebSockex.start_link("wss://api.hitbtc.com/api/2/ws", __MODULE__, %{symbols_list: symbols})
+    WebSockex.start_link("wss://api.zb.cn/websocket", __MODULE__, %{symbols_list: symbols})
   end
 
   def handle_connect(_conn, state) do
@@ -43,11 +42,6 @@ defmodule HitBTCClient do
 
     new_state = Map.merge(new_state, s)
 
-    IO.inspect(new_state)
-
-    # new_state = put_in new_state, [:btcusdt], %{}
-    # new_state = put_in new_state, [:btcusdt, :orderbook], %{}
-
     Enum.each(state.symbols_list, fn {a, _} ->
       send_message(self(), subscription_to_orderbook_frame_jsonified(a))
       send_message(self(), subscription_to_ticker_frame_jsonified(a))
@@ -57,89 +51,69 @@ defmodule HitBTCClient do
   end
 
   def handle_frame({:text, msg}, state) do
+    {:ok, msg_decoded} = msg |> Jason.decode()
+
     new_state =
-      msg
-      |> Jason.decode!()
-      # |> IO.inspect()
-      |> handle_received_message(state)
+      if String.ends_with?(msg_decoded["channel"], "_ticker") do
+        handle_message_ticker(msg_decoded, state)
+      else
+        handle_message_orderbook(msg_decoded, state)
+      end
 
     {:ok, new_state}
   end
 
   def handle_frame(frame, state) do
-    # IO.inspect(frame)
+    IO.inspect(frame)
     {:ok, state}
   end
 
-  def handle_received_message(%{"method" => "ticker", "params" => params}, state) do
-    # AggregatorActor.new_message(%{
-    #   ask: ask,
-    #   ask_size: ask_size,
-    #   bid: bid,
-    #   bid_size: bid_size,
-    #   exchange: "hitbtc",
-    #   high: params["high"],
-    #   last_price: params["last"],
-    #   low: params["low"],
-    #   symbol: params["symbol"],
-    #   timestamp: params["timestamp"],
-    #   volume: params["volume"]
-    # })
-
-    # state
-
-    pair_as_atom = get_pair_as_atom(params["symbol"])
+  def handle_message_ticker(%{"ticker" => ticker, "channel" => ch} = msg, state) do
+    pair_as_atom = get_pair_as_atom(ch)
 
     new_pair =
       state[pair_as_atom]
-      |> Map.put(:high, params["high"])
-      |> Map.put(:low, params["low"])
-      |> Map.put(:timestamp, params["timestamp"])
-      |> Map.put(:volume, params["volume"])
-      |> Map.put(:exchange_id, "hitbtc")
-      # |> Map.put(:symbol, state.symbols_ids[pair])
-      |> Map.put(:last_price, params["last"])
+      |> Map.put(:high, ticker["high"])
+      |> Map.put(:low, ticker["low"])
+      |> Map.put(:timestamp, String.to_integer(msg["date"]))
+      |> Map.put(:volume, ticker["vol"])
+      |> Map.put(:exchange_id, "zb")
+      |> Map.put(:symbol, state.symbols_ids[pair_as_atom])
+      |> Map.put(:last_price, ticker["last"])
 
     new_state = Map.put(state, pair_as_atom, new_pair)
 
-    IO.inspect(state)
+    AggregatorActor.new_message(new_state[pair_as_atom])
 
     new_state
   end
 
-  def handle_received_message(%{"method" => "snapshotOrderbook"}, state) do
-    state
+  def get_pair_as_atom(ch) do
+    t =
+      if String.ends_with?(ch, "_ticker") do
+        String.slice(ch, 0..-(String.length("_ticker") + 1))
+      else
+        String.slice(ch, 0..-(String.length("_depth") + 1))
+      end
+
+    String.to_atom(t)
   end
 
-  def handle_received_message(
-        %{
-          "method" => "updateOrderbook",
-          "params" => %{
-            "ask" => asks,
-            "bid" => bids,
-            "symbol" => symbol,
-            "timestamp" => timestamp
-          }
-        },
-        state
-      ) do
-    pair_as_atom = get_pair_as_atom(symbol)
+  def handle_message_orderbook(msg, state) do
+    %{"channel" => ch, "bids" => bids, "asks" => asks} = msg
+
+    pair = get_pair_as_atom(ch)
 
     new_pair =
-      state[pair_as_atom]
+      state[pair]
       |> put_in([:orderbook, :bid], get_best_bid(bids))
       |> put_in([:orderbook, :ask], get_best_ask(asks))
       |> put_in([:orderbook, :bid_size], get_bid_size(bids))
       |> put_in([:orderbook, :ask_size], get_ask_size(asks))
 
-    new_state = Map.put(state, pair_as_atom, new_pair)
+    new_state = Map.put(state, pair, new_pair)
 
     new_state
-  end
-
-  def handle_received_message(msg, state) do
-    IO.inspect(msg)
-    state
   end
 
   def handle_cast({:send, {:text, msg} = frame}, state) do
@@ -156,11 +130,8 @@ defmodule HitBTCClient do
   def subscription_to_ticker_frame_jsonified(symbol) do
     subscription_message =
       %{
-        method: "subscribeTicker",
-        params: %{
-          symbol: symbol
-        },
-        id: 123
+        event: "addChannel",
+        channel: "#{symbol}_ticker"
       }
       |> Jason.encode!()
 
@@ -170,11 +141,8 @@ defmodule HitBTCClient do
   def subscription_to_orderbook_frame_jsonified(symbol) do
     subscription_message =
       %{
-        method: "subscribeOrderbook",
-        params: %{
-          symbol: symbol
-        },
-        id: 123
+        event: "addChannel",
+        channel: "#{symbol}_depth"
       }
       |> Jason.encode!()
 
@@ -185,8 +153,8 @@ defmodule HitBTCClient do
     if bids == nil || length(bids) == 0 do
       0
     else
-      bid = hd(bids)
-      bid["price"]
+      [p, _] = hd(bids)
+      p
     end
   end
 
@@ -194,8 +162,8 @@ defmodule HitBTCClient do
     if asks == nil || length(asks) == 0 do
       0
     else
-      ask = hd(asks)
-      ask["price"]
+      [a, _] = hd(asks)
+      a
     end
   end
 
@@ -203,8 +171,8 @@ defmodule HitBTCClient do
     if bids == nil || length(bids) == 0 do
       0
     else
-      bid = hd(bids)
-      bid["size"]
+      [_, a] = hd(bids)
+      a
     end
   end
 
@@ -212,12 +180,8 @@ defmodule HitBTCClient do
     if asks == nil || length(asks) == 0 do
       0
     else
-      ask = hd(asks)
-      ask["size"]
+      [_, a] = hd(asks)
+      a
     end
-  end
-
-  def get_pair_as_atom(ch) do
-    String.to_atom(ch)
   end
 end

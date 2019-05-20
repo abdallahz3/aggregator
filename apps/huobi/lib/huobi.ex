@@ -1,131 +1,53 @@
 defmodule HuobiClient do
   use WebSockex
 
-  @url "wss://api.huobi.pro/ws"
-  # @url "ws://demos.kaazing.com/echo"
+  # state looks like this
+  # {
+  #    btcusdt: {
+  #        ...
+  #    },
+  #    ethbtc: {
+  #        ...
+  #    },
+  #    symbols_ids: {
+  #       ... which maps form pair like this `btcusdt` to `btc_usdt` as this is a requirement from the
+  #               the technical document
+  #    }
+  # }
+  #
+  #
+  # HuobiClient.start_link [{:btcusdt, "btc_usdt"}]
+  #
+  #
 
   def start_link(symbols) do
-    # kline = "market.#{pair}.detail"
-    # depth = "#{pair}.depth.step0"
+    WebSockex.start_link("wss://api.huobi.pro/ws", __MODULE__, %{symbols_list: symbols})
+  end
 
-    symbols2 =
-      Enum.map(symbols, fn symbol ->
-        %{kline: "market.#{symbol}.detail", depth: "market.#{symbol}.depth.step0"}
+  def handle_connect(_conn, state) do
+    IO.puts("Connected")
+
+    symbols_ids =
+      Enum.reduce(state.symbols_list, %{}, fn {a, b}, acc -> Map.put_new(acc, a, b) end)
+
+    new_state = %{}
+    new_state = put_in(new_state, [:symbols_ids], symbols_ids)
+
+    s =
+      Enum.reduce(state.symbols_list, %{}, fn {a, _}, acc ->
+        acc = put_in(acc, [a], %{})
+        acc = put_in(acc, [a, :orderbook], %{ask: 0, bid: 0, ask_size: 0, bid_size: 0})
+        acc
       end)
 
-    try_connect(symbols2, 1000)
-  end
+    new_state = Map.merge(new_state, s)
 
-  def try_connect(symbols, backoff_time) do
-    case WebSockex.start_link(
-           @url,
-           __MODULE__,
-           %{
-             symbols: symbols
-           }
-         ) do
-      {:ok, pid} ->
-        {:ok, pid}
+    Enum.each(state.symbols_list, fn {a, _} ->
+      subscribe(self(), "market.#{Atom.to_string(a)}.detail")
+      subscribe(self(), "market.#{Atom.to_string(a)}.depth.step0")
+    end)
 
-      {:error, reason} ->
-        IO.puts("Error starting.")
-        IO.inspect(reason)
-        # {:error, reason}
-        # {:shutdown, reason}
-        # :ignore
-        :timer.sleep(backoff_time)
-        try_connect(symbols, backoff_time * 2)
-    end
-  end
-
-  def init(state) do
-    IO.puts("state")
-    IO.inspect(state)
-    # Enum.each 
-    # subscribe(pair, depth, "depth")
-  end
-
-  # Handlers of received messages
-  def handle_message(%{"ping" => ts}, state) do
-    # IO.puts("Got a ping")
-
-    m =
-      %{
-        "pong" => ts
-      }
-      |> Jason.encode!()
-
-    send_message(state.process_name, m)
-
-    state
-  end
-
-  def handle_message(msg, state) do
-    kline = state.kline
-    depth = state.depth
-
-    new_state =
-      case msg["ch"] do
-        ^kline -> handle_message_kline(msg, state)
-        ^depth -> handle_message_depth(msg, state)
-        _ -> state
-      end
-
-    new_state
-  end
-
-  # def handle_message_kline(%{"ch" => @kline, "tick" => tick} = msg, state) do
-  def handle_message_kline(%{"tick" => tick} = msg, state) do
-    new_state =
-      state
-      |> Map.put(:high, tick["high"])
-      |> Map.put(:low, tick["low"])
-      |> Map.put(:timestamp, msg["ts"])
-      |> Map.put(:volume, tick["vol"])
-      |> Map.put(:exchange_id, "huobi")
-      |> Map.put(:symbol, state.pair_as_string)
-      |> Map.put(:last_price, tick["close"])
-
-    # check if at least we received a depth once
-    if Map.has_key?(new_state.latest_depth, :bid) do
-      # IO.inspect new_state 
-      Huobi.Aggregator.new_message(new_state)
-    end
-
-    new_state
-  end
-
-  # def handle_message_depth(%{"ch" => @depth, "tick" => %{"bids" => bids, "asks" => asks}} = msg, state) do
-  def handle_message_depth(%{"tick" => %{"bids" => bids, "asks" => asks}}, state) do
-    new_state =
-      state
-      |> put_in([:latest_depth, :bid], get_best_bid(bids))
-      |> put_in([:latest_depth, :ask], get_best_ask(asks))
-      |> put_in([:latest_depth, :bid_size], get_bid_size(bids))
-      |> put_in([:latest_depth, :ask_size], get_ask_size(asks))
-
-    new_state
-  end
-
-  # Client API
-  def send_message(process_name, msg) do
-    WebSockex.cast(process_name, {:send, {:text, msg}})
-  end
-
-  # Server API
-  def handle_cast({:send, frame}, state) do
-    {:reply, frame, state}
-  end
-
-  # Callbacks
-  def handle_connect(_conn, state) do
-    IO.puts("Connected #{state.process_name}")
-    {:ok, state}
-  end
-
-  def handle_disconnect(_conn, state) do
-    IO.puts("Disconnected #{state.process_name}")
-    {:ok, state}
+    {:ok, new_state}
   end
 
   def handle_frame({:binary, msg}, state) do
@@ -142,21 +64,99 @@ defmodule HuobiClient do
     {:ok, state}
   end
 
-  # Helper Functions
-  defp subscribe(pid, ch, id) do
-    send_message(pid, subscription_frame(ch, id))
-  end
+  def handle_message(%{"ping" => ts}, state) do
+    IO.puts("Got a ping")
 
-  def subscription_frame(ch, id) do
-    subscription_message =
+    m =
       %{
-        sub: "#{ch}",
-        # id: "#{ch}"
-        id: id
+        "pong" => ts
       }
       |> Jason.encode!()
 
-    # {:text, subscription_message}
+    send_message(self(), m)
+
+    state
+  end
+
+  def handle_message(%{"ch" => ch} = msg, state) do
+    if String.ends_with?(ch, "detail") do
+      handle_message_ticker(msg, state)
+    else
+      handle_message_orderbook(msg, state)
+    end
+  end
+
+  def handle_message_ticker(%{"tick" => tick, "ch" => ch} = msg, state) do
+    pair = get_pair_as_atom(ch)
+
+    new_pair =
+      state[pair]
+      |> Map.put(:high, tick["high"])
+      |> Map.put(:low, tick["low"])
+      |> Map.put(:timestamp, msg["ts"])
+      |> Map.put(:volume, tick["vol"])
+      |> Map.put(:exchange_id, "huobi")
+      |> Map.put(:symbol, state.symbols_ids[pair])
+      |> Map.put(:last_price, tick["close"])
+
+    new_state = Map.put(state, pair, new_pair)
+
+
+    AggregatorActor.new_message(new_state[pair_as_atom])
+
+    new_state
+  end
+
+  def get_pair_as_atom(ch) do
+    # the convention is that always the second element represents the pair
+    [_, b | _] = String.split(ch, ".")
+    String.to_atom(b)
+  end
+
+  def handle_message_orderbook(msg, state) do
+    %{"ch" => ch, "tick" => %{"bids" => bids, "asks" => asks}} = msg
+
+    pair = get_pair_as_atom(ch)
+
+    new_pair =
+      state[pair]
+      |> put_in([:orderbook, :bid], get_best_bid(bids))
+      |> put_in([:orderbook, :ask], get_best_ask(asks))
+      |> put_in([:orderbook, :bid_size], get_bid_size(bids))
+      |> put_in([:orderbook, :ask_size], get_ask_size(asks))
+
+    new_state = Map.put(state, pair, new_pair)
+
+    new_state
+  end
+
+  def handle_message(msg, state) do
+    IO.inspect(msg)
+    state
+  end
+
+  def send_message(pid, msg) do
+    WebSockex.cast(pid, {:send, {:text, msg}})
+  end
+
+  def handle_cast({:send, {type, msg} = frame}, state) do
+    IO.puts("Sending #{type} frame with payload: #{msg}")
+    {:reply, frame, state}
+  end
+
+  # Helper Functions
+  defp subscribe(pid, ch) do
+    send_message(pid, subscription_frame(ch))
+  end
+
+  def subscription_frame(ch) do
+    subscription_message =
+      %{
+        sub: "#{ch}",
+        id: ch
+      }
+      |> Jason.encode!()
+
     subscription_message
   end
 
@@ -182,5 +182,8 @@ defmodule HuobiClient do
     ask = hd(asks)
     [_, size] = ask
     size
+  end
+
+  defp get_symbol_id_snake_cased(state) do
   end
 end

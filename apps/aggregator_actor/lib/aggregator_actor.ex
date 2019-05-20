@@ -14,8 +14,6 @@ defmodule AggregatorActor do
   end
 
   def handle_cast({:new_message, msg}, state) do
-    IO.puts("toz")
-
     msg
     |> convert_from_map_to_aggregator_structure()
     |> IO.inspect()
@@ -25,17 +23,17 @@ defmodule AggregatorActor do
 
   defp convert_from_map_to_aggregator_structure(m) do
     %AggregatorStructure{
-      ask: m.ask,
-      ask_size: m.ask_size,
-      bid: m.bid,
-      bid_size: m.bid_size,
-      exchange: m.exchange,
-      high: m.high,
-      last_price: m.last_price,
-      low: m.low,
-      symbol: m.symbol,
-      timestamp: DateTime.from_unix!(m.timestamp, :millisecond),
-      volume: m.volume
+      ask: m.orderbook[:ask],
+      ask_size: m.orderbook[:ask_size],
+      bid: m.orderbook[:bid],
+      bid_size: m.orderbook[:bid_size],
+      exchange: m[:exchange_id],
+      high: m[:high],
+      last_price: m[:last_price],
+      low: m[:low],
+      symbol: m[:symbol],
+      timestamp: DateTime.from_unix!(m[:timestamp], :millisecond),
+      volume: m[:volume]
     }
   end
 end
