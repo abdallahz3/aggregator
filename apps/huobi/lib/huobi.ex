@@ -87,19 +87,19 @@ defmodule HuobiClient do
   end
 
   def handle_message_ticker(%{"tick" => tick, "ch" => ch} = msg, state) do
-    pair = get_pair_as_atom(ch)
+    pair_as_atom = get_pair_as_atom(ch)
 
     new_pair =
-      state[pair]
+      state[pair_as_atom]
       |> Map.put(:high, tick["high"])
       |> Map.put(:low, tick["low"])
       |> Map.put(:timestamp, msg["ts"])
       |> Map.put(:volume, tick["vol"])
       |> Map.put(:exchange_id, "huobi")
-      |> Map.put(:symbol, state.symbols_ids[pair])
+      |> Map.put(:symbol, state.symbols_ids[pair_as_atom])
       |> Map.put(:last_price, tick["close"])
 
-    new_state = Map.put(state, pair, new_pair)
+    new_state = Map.put(state, pair_as_atom, new_pair)
 
 
     AggregatorActor.new_message(new_state[pair_as_atom])
