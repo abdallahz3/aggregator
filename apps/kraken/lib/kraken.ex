@@ -114,7 +114,22 @@ defmodule KrakenClient do
     pair_as_atom = state.channels_map[channel_id]
     state = update_ticker(state, pair_as_atom, tick)
 
-    AggregatorActor.new_message(state[pair_as_atom])
+    pair = state[pair_as_atom]
+
+    AggregatorActor.new_message(%{
+          high: pair.h,
+          low: pair.l,
+          orderbook: %{
+            ask: pair.orderbook.ask,
+            bid: pair.orderbook.bid,
+            ask_size: pair.orderbook.ask_size,
+            bid_size: pair.orderbook.bid_size
+          },
+          exchange_id: "kraken",
+          last_price: pair.c,
+          symbol: state.symbols_ids[pair_as_atom],
+          volume: pair.v,
+          })
 
     state
   end
@@ -243,6 +258,13 @@ defmodule KrakenClient do
         [v, _] = tick["v"]
         put_in(pair, [:v], v)
       end
+
+    pair =
+    if Map.has_key?(tick, "c") do
+      [c, _] = tick["c"]
+      put_in(pair, [:c], c)
+    end
+
 
     new_state = Map.put(state, pair_as_atom, pair)
 

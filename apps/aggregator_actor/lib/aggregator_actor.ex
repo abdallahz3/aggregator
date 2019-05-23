@@ -32,7 +32,7 @@ defmodule AggregatorActor do
       last_price: m[:last_price],
       low: m[:low],
       symbol: m[:symbol],
-      timestamp: DateTime.from_unix!(m[:timestamp], :millisecond),
+      timestamp: if m[:timestamp] do DateTime.from_unix!(m[:timestamp], :millisecond) else 0 end,
       volume: m[:volume]
     }
   end
